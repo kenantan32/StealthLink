@@ -13,6 +13,7 @@ SECRET_KEY = "mysecretkey12345"  # Key for encryption and decryption
 received_chunks = {}  # Dictionary to hold received chunks
 dict_lock = threading.Lock()  # Lock for thread synchronization
 all_chunks_received = threading.Event()  # Event to signal all chunks are received
+stop_sniffer = threading.Event()  # Event to signal the sniffer to stop
 
 # Encryption function
 def encrypt_payload(payload):
@@ -58,6 +59,9 @@ def send_payload(payload, target_ip):
 # Packet Sniffer and Reassembler
 def packet_sniffer():
     def icmp_sniffer(packet):
+        if stop_sniffer.is_set():
+            return
+
         if packet.haslayer(ICMP) and packet.haslayer(Raw):  # Capture all ICMP packets with data
             try:
                 payload_data = packet[Raw].load.hex()
@@ -88,7 +92,6 @@ if __name__ == "__main__":
     # Start the sniffer thread
     print("[Main] Starting sniffer thread...")
     sniffer_thread = threading.Thread(target=packet_sniffer)
-    sniffer_thread.daemon = True
     sniffer_thread.start()
 
     # Give the sniffer more time to initialize
@@ -103,6 +106,9 @@ if __name__ == "__main__":
     # Wait for packets to be fully received and processed
     all_chunks_received.wait(timeout=30)  # Wait until all chunks are received or timeout
 
+    # Signal the sniffer to stop
+    stop_sniffer.set()
+
     # Attempt to reassemble and decrypt the payload after sending is complete
     with dict_lock:
         if received_chunks:
@@ -115,3 +121,6 @@ if __name__ == "__main__":
                 print(f"[Receiver] Error reassembling or decrypting payload: {e}")
         else:
             print("[Receiver] No packets were received.")
+
+    # Wait for the sniffer thread to finish
+    sniffer_thread.join()
