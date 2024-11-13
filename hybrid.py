@@ -82,7 +82,7 @@ def send_dns_payload(payload, domain):
         packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
         print(f"[Sender - DNS] Sending DNS query: {query_domain}")
         send(packet, verbose=False)
-        time.sleep(random.uniform(0.5, 1.0))
+        time.sleep(random.uniform(0.1, 0.3))  # Reduced delay to speed up transmission
 
 # Packet Sniffer and Reassembler
 def packet_sniffer():
@@ -145,16 +145,13 @@ if __name__ == "__main__":
     sniffer_thread.start()
 
     # Give the sniffer more time to initialize
-    time.sleep(5)
+    time.sleep(2)  # Reduced wait time for sniffer initialization
     print("[Main] Sniffer thread started. Sending hybrid payload...")
 
     # Send the hybrid payload
     send_hybrid_payload(text_payload, target_ip)
 
     print("[Main] Payload transmission complete.")
-
-    # Wait for packets to be fully received and processed
-    all_chunks_received.wait(timeout=30)  # Wait until all chunks are received or timeout
 
     # Signal the sniffer to stop
     stop_sniffer.set()
@@ -174,6 +171,6 @@ if __name__ == "__main__":
             print("[Receiver] No packets were received.")
 
     # Wait for the sniffer thread to finish
-    sniffer_thread.join(timeout=10)  # Wait for the sniffer thread to complete for a maximum of 10 seconds
+    sniffer_thread.join(timeout=5)  # Reduced wait time for sniffer thread to complete
 
     print("[Main] Sniffer thread has been stopped. Exiting program.")
