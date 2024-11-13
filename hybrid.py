@@ -2,10 +2,10 @@ import os
 import random
 import string
 import time
-import base64
 import hashlib
 import threading
-from scapy.all import IP, ICMP, send, sniff, conf, UDP, DNS, DNSQR
+import zlib
+from scapy.all import IP, ICMP, UDP, DNS, DNSQR, send, sniff, conf
 from scapy.packet import Raw
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -16,73 +16,58 @@ received_chunks = {}  # Dictionary to hold received chunks
 all_chunks_received = threading.Event()  # Event to signal all chunks are received
 stop_sniffer = threading.Event()  # Event to signal the sniffer to stop
 dict_lock = threading.Lock()  # Lock for thread-safe access to received_chunks
-DOMAIN = "example.com"  # Domain for DNS queries
-dns_servers = ["127.0.0.1"]  # Use loopback IP address for testing
+DNS_DOMAIN = "example.com"  # Example domain for DNS queries
+dns_servers = ["127.0.0.1"]  # DNS server IP for testing
 
-# Encryption function
-def encrypt_payload(payload):
+# Encryption and Compression function
+def encrypt_and_compress_payload(payload):
+    # Compress the payload
+    compressed_payload = zlib.compress(payload.encode())
+    # Encrypt the compressed payload
     key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
-    cipher = AES.new(key, AES.MODE_CBC)  # Use AES in CBC mode
-    ct_bytes = cipher.encrypt(pad(payload.encode(), AES.block_size))
-    iv = base64.urlsafe_b64encode(cipher.iv).decode().rstrip('=')
-    ct = base64.urlsafe_b64encode(ct_bytes).decode().rstrip('=')
-    return f"{iv}:{ct}"
+    cipher = AES.new(key, AES.MODE_CBC)
+    ct_bytes = cipher.encrypt(pad(compressed_payload, AES.block_size))
+    return cipher.iv + ct_bytes
 
-# Decryption function
-def decrypt_payload(encrypted_payload):
+# Decryption and Decompression function
+def decrypt_and_decompress_payload(encrypted_payload):
     try:
         key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
-        if ":" not in encrypted_payload:
-            raise ValueError("Missing IV and ciphertext separator.")
-        iv, ct = encrypted_payload.split(":")
-        iv = base64.urlsafe_b64decode(iv + '=' * (-len(iv) % 4))
-        ct = base64.urlsafe_b64decode(ct + '=' * (-len(ct) % 4))
+        iv = encrypted_payload[:16]
+        ct = encrypted_payload[16:]
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        pt = unpad(cipher.decrypt(ct), AES.block_size)
-        return pt.decode()
+        compressed_payload = unpad(cipher.decrypt(ct), AES.block_size)
+        # Decompress the payload
+        decompressed_payload = zlib.decompress(compressed_payload)
+        return decompressed_payload.decode()
     except ValueError as e:
         raise ValueError(f"Decryption failed due to incorrect data format: {e}")
     except Exception as e:
         raise Exception(f"Decryption failed: {e}")
-
-# Hybrid Payload Sender
-def send_hybrid_payload(payload, target_ip, domain=DOMAIN):
-    # Encrypt the payload before transmission
-    encrypted_payload = encrypt_payload(payload)
-    # Encode the entire encrypted payload to base64
-    encoded_payload = base64.urlsafe_b64encode(encrypted_payload.encode()).decode().rstrip('=')
-
-    # Split the encoded payload in half for ICMP and DNS transmission
-    half_length = len(encoded_payload) // 2
-    icmp_payload = encoded_payload[:half_length]
-    dns_payload = encoded_payload[half_length:]
-
-    # Send half of the payload via ICMP
-    send_icmp_payload(icmp_payload, target_ip)
-    # Send half of the payload via DNS
-    send_dns_payload(dns_payload, domain)
 
 # ICMP Payload Sender
 def send_icmp_payload(payload, target_ip):
     chunk_size = 32
     payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
     for i, chunk in enumerate(payload_chunks):
-        packet = IP(dst=target_ip) / ICMP(type=8, seq=i) / Raw(load=chunk)
+        sequence_number = i  # Use a consistent sequence number for ordering
+        ttl_value = random.randint(30, 128)  # Random TTL value between common ranges
+        packet = IP(dst=target_ip, ttl=ttl_value) / ICMP(type=8, seq=sequence_number) / Raw(load=chunk)
         send(packet, verbose=False)
-        print(f"[Sender - ICMP] Sent packet with sequence number {i} and chunk: {chunk}")
+        print(f"[Sender - ICMP] Sent packet with sequence number {sequence_number}, TTL {ttl_value}, and chunk: {chunk}")
 
 # DNS Payload Sender
 def send_dns_payload(payload, domain):
     chunk_size = 32
     payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
 
-    for chunk in payload_chunks:
+    for i, chunk in enumerate(payload_chunks):
         random_label = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-        query_domain = f"{random_label}-{chunk}.{domain}"
-        packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain))
-        print(f"[Sender - DNS] Sending DNS query: {query_domain}")
+        query_domain = f"{random_label}-{i}.{domain}"
+        packet = IP(dst=random.choice(dns_servers)) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain)) / Raw(load=chunk)
+        print(f"[Sender - DNS] Sending DNS query: {query_domain} with chunk: {chunk}")
         send(packet, verbose=False)
-        time.sleep(random.uniform(0.1, 0.3))  # Reduced delay to speed up transmission
+        time.sleep(random.uniform(0.05, 0.2))  # Reduced delay to make transmission faster and more natural
 
 # Packet Sniffer and Reassembler
 def packet_sniffer():
@@ -92,7 +77,7 @@ def packet_sniffer():
 
         if packet.haslayer(ICMP) and packet.haslayer(Raw):  # Capture all ICMP packets with data
             try:
-                payload_data = packet[Raw].load.decode()
+                payload_data = packet[Raw].load
                 seq_num = packet[ICMP].seq
 
                 # Only process packets with valid sequence numbers
@@ -112,21 +97,24 @@ def packet_sniffer():
                 print(f"[Sniffer - ICMP] Error decoding ICMP packet: {e}")
 
     def dns_sniffer(packet):
-        if packet.haslayer(DNS) and packet.getlayer(DNS).qd is not None:  # Capture only valid DNS query packets
-            try:
-                query_name = packet.getlayer(DNS).qd.qname.decode().strip('.')
+        if stop_sniffer.is_set():
+            return
 
-                # Filter packets to only process those with the target domain
-                if DOMAIN in query_name:
-                    if '-' in query_name:
-                        split_query = query_name.split('-')
-                        if len(split_query) > 1:
-                            data_chunk = split_query[1].split('.')[0]
-                            with dict_lock:
-                                if data_chunk not in received_chunks.values():  # Avoid duplicates
-                                    received_chunks[len(received_chunks)] = data_chunk
-                                    print(f"[Sniffer - DNS] DNS chunk received: {data_chunk}")
-                                    print(f"[Sniffer - DNS] Current received chunks: {received_chunks}")
+        if packet.haslayer(DNS) and packet.haslayer(Raw):  # Capture all DNS packets with data
+            try:
+                payload_data = packet[Raw].load
+                query_name = packet[DNS].qd.qname.decode().strip('.')
+
+                # Only process packets with the target domain
+                if DNS_DOMAIN in query_name:
+                    print(f"[Sniffer - DNS] DNS packet received for query: {query_name}")
+                    index = int(query_name.split('-')[1].split('.')[0])
+
+                    with dict_lock:
+                        if index not in received_chunks:
+                            received_chunks[index] = payload_data
+                            print(f"[Sniffer - DNS] DNS chunk received: {payload_data}")
+                            print(f"[Sniffer - DNS] Current received chunks: {received_chunks}")
 
             except Exception as e:
                 print(f"[Sniffer - DNS] Error decoding DNS packet: {e}")
@@ -134,10 +122,13 @@ def packet_sniffer():
     # Start sniffing ICMP and DNS packets
     sniff(filter="icmp or udp port 53", prn=lambda pkt: icmp_sniffer(pkt) or dns_sniffer(pkt), store=0, iface="Software Loopback Interface 1", stop_filter=lambda x: stop_sniffer.is_set())
 
-# Run Hybrid Tunneling
+# Run Payload Transmission
 if __name__ == "__main__":
     target_ip = "127.0.0.1"
-    text_payload = "This is a hardcoded hybrid payload."
+    text_payload = "This is my hardcoded payload that I am tunneling over."
+
+    # Encrypt and compress the payload before transmission
+    encrypted_payload = encrypt_and_compress_payload(text_payload)
 
     # Start the sniffer thread
     print("[Main] Starting sniffer thread...")
@@ -146,10 +137,12 @@ if __name__ == "__main__":
 
     # Give the sniffer more time to initialize
     time.sleep(2)  # Reduced wait time for sniffer initialization
-    print("[Main] Sniffer thread started. Sending hybrid payload...")
+    print("[Main] Sniffer thread started. Sending payload...")
 
-    # Send the hybrid payload
-    send_hybrid_payload(text_payload, target_ip)
+    # Send the payload via ICMP
+    send_icmp_payload(encrypted_payload, target_ip)
+    # Send the payload via DNS
+    send_dns_payload(encrypted_payload, DNS_DOMAIN)
 
     print("[Main] Payload transmission complete.")
 
@@ -160,11 +153,12 @@ if __name__ == "__main__":
     with dict_lock:
         if received_chunks:
             try:
-                reassembled_payload = ''.join([received_chunks[key] for key in sorted(received_chunks.keys()) if key is not None])
-                reassembled_payload_padded = reassembled_payload + '=' * (-len(reassembled_payload) % 4)  # Add padding if needed
-                reassembled_text = base64.urlsafe_b64decode(reassembled_payload_padded).decode(errors='ignore')
-                decrypted_payload = decrypt_payload(reassembled_text)
+                reassembled_payload = b''.join([received_chunks[key] for key in sorted(received_chunks.keys()) if key is not None])
+                # Decrypt and decompress the payload
+                decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+            except ValueError as ve:
+                print(f"[Receiver] Error due to incorrect data format: {ve}")
             except Exception as e:
                 print(f"[Receiver] Error reassembling or decrypting payload: {e}")
         else:
