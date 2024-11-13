@@ -67,6 +67,11 @@ def packet_sniffer():
                 payload_data = packet[Raw].load.hex()
                 seq_num = packet[ICMP].seq
 
+                # Only process packets with valid sequence numbers
+                if seq_num is None:
+                    print("[Sniffer] Ignored packet with no sequence number.")
+                    return
+
                 print(f"[Sniffer] ICMP packet received with sequence number {seq_num}")
 
                 with dict_lock:
@@ -77,12 +82,13 @@ def packet_sniffer():
                     # Check if all chunks are received
                     if len(received_chunks) == 4:  # Assuming we know the number of chunks to expect
                         all_chunks_received.set()
+                        stop_sniffer.set()  # Signal sniffer to stop once all chunks are received
 
             except Exception as e:
                 print(f"[Sniffer] Error decoding ICMP packet: {e}")
 
     # Start sniffing ICMP packets
-    sniff(filter="icmp", prn=icmp_sniffer, store=0, iface="Software Loopback Interface 1")
+    sniff(filter="icmp", prn=icmp_sniffer, store=0, iface="Software Loopback Interface 1", stop_filter=lambda x: stop_sniffer.is_set())
 
 # Run ICMP Tunneling
 if __name__ == "__main__":
@@ -91,7 +97,7 @@ if __name__ == "__main__":
 
     # Start the sniffer thread
     print("[Main] Starting sniffer thread...")
-    sniffer_thread = threading.Thread(target=packet_sniffer)
+    sniffer_thread = threading.Thread(target=packet_sniffer, daemon=True)
     sniffer_thread.start()
 
     # Give the sniffer more time to initialize
@@ -113,7 +119,7 @@ if __name__ == "__main__":
     with dict_lock:
         if received_chunks:
             try:
-                reassembled_payload = ''.join([received_chunks[key] for key in sorted(received_chunks.keys())])
+                reassembled_payload = ''.join([received_chunks[key] for key in sorted(received_chunks.keys()) if key is not None])
                 reassembled_text = bytes.fromhex(reassembled_payload).decode(errors='ignore')
                 decrypted_payload = decrypt_payload(reassembled_text)
                 print(f"[Receiver] Final Reassembled and Decrypted Payload: {decrypted_payload}")
@@ -123,4 +129,6 @@ if __name__ == "__main__":
             print("[Receiver] No packets were received.")
 
     # Wait for the sniffer thread to finish
-    sniffer_thread.join()
+    sniffer_thread.join(timeout=10)  # Wait for the sniffer thread to complete for a maximum of 10 seconds
+
+    print("[Main] Sniffer thread has been stopped. Exiting program.")
