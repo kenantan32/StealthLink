@@ -11,6 +11,8 @@ import uuid
 from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, send, sniff, conf, Raw
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Random import get_random_bytes
 
 # Configuration
 SECRET_KEY = "mysecretkey12345"  # Key for encryption and decryption
@@ -21,13 +23,15 @@ dict_lock = threading.Lock()  # Lock for thread-safe access to received_chunks
 DNS_DOMAIN = "example.com"  # Example domain for DNS queries
 dns_servers = ["8.8.8.8", "8.8.4.4"]  # Public DNS servers for testing
 HTTP_SERVER_IP = "127.0.0.1"  # Localhost for testing HTTP dummy traffic
+salt = get_random_bytes(16) # Salt generation
 
 # Encryption and Compression function
 def encrypt_and_compress_payload(payload):
     # Compress the payload
     compressed_payload = zlib.compress(payload.encode())
     # Encrypt the compressed payload
-    key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
+    key = PBKDF2(SECRET_KEY, salt, dkLen=32, count=1000000)  # Generate a 256-bit PBKDF2-based key with a high iteration count
+    #key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
     cipher = AES.new(key, AES.MODE_CBC)
     ct_bytes = cipher.encrypt(pad(compressed_payload, AES.block_size))
     return cipher.iv + ct_bytes
@@ -35,7 +39,8 @@ def encrypt_and_compress_payload(payload):
 # Decryption and Decompression function
 def decrypt_and_decompress_payload(encrypted_payload):
     try:
-        key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
+        key = PBKDF2(SECRET_KEY, salt, dkLen=32, count=1000000)  # Generate a 256-bit PBKDF2-based key with a high iteration count
+        #key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
         iv = encrypted_payload[:16]
         ct = encrypted_payload[16:]
         cipher = AES.new(key, AES.MODE_CBC, iv)
@@ -166,7 +171,7 @@ def send_dns_payload_with_dummy(payload):
         packet_payload = identifier_length.to_bytes(4, byteorder='big') + identifier + chunk_index + chunk
 
         # Send the actual payload packet
-        packet = IP(dst=dns_server) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain)) / Raw(load=packet_payload)
+        packet = IP(dst="127.0.0.1") / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain)) / Raw(load=packet_payload)
         send(packet, verbose=False)
         print(f"[Sender - DNS] Sent payload DNS query: {query_domain}")
         print(f"[Sender - DNS] Sending chunk index {i}, chunk: {chunk}")
@@ -267,7 +272,7 @@ def packet_sniffer():
     sniff(filter="icmp or udp port 53 or tcp port 80 or tcp port 443",
           prn=process_packet,
           store=0,
-          iface="Software Loopback Interface 1",  # Using the original interface name
+          iface="lo",  # Using the original interface name
           stop_filter=lambda x: stop_sniffer.is_set())
 
 # Run Payload Transmission
@@ -301,7 +306,7 @@ if __name__ == "__main__":
     print("[Main] Payload transmission complete.")
 
     # Wait to ensure all packets are processed
-    time.sleep(10)
+    time.sleep(20)
 
     # Signal the sniffer and dummy traffic to stop
     stop_sniffer.set()
