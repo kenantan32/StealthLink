@@ -274,6 +274,31 @@ def packet_sniffer():
           store=0,
           iface="lo",  # Using the original interface name
           stop_filter=lambda x: stop_sniffer.is_set())
+    
+# Using timestamp to create unique filenames
+def generate_unique_filename(protocol):
+    timestamp = time.strftime("%Y%m%d-%H%M%S")  # Format: YYYYMMDD-HHMMSS
+    return f"payload_{timestamp}_{protocol}.txt"
+    
+# Saving reassembled and decrypted payload to a new file (ICMP)
+def save_payload_to_file_icmp(decrypted_payload):
+    # Generate a unique filename for every payload received
+    filename = generate_unique_filename("icmp")  # Or use generate_unique_filename_with_uuid()
+    
+    # Save the decrypted payload to the file
+    with open(filename, "w") as file:
+        file.write(decrypted_payload)
+    print(f"Payload saved to: {filename}")
+
+# Saving reassembled and decrypted payload to a new file (DNS)
+def save_payload_to_file_dns(decrypted_payload):
+    # Generate a unique filename for every payload received
+    filename = generate_unique_filename("dns")  # Or use generate_unique_filename_with_uuid()
+    
+    # Save the decrypted payload to the file
+    with open(filename, "w") as file:
+        file.write(decrypted_payload)
+    print(f"Payload saved to: {filename}")
 
 # Run Payload Transmission
 if __name__ == "__main__":
@@ -325,9 +350,7 @@ if __name__ == "__main__":
                 print(f"[Debug - ICMP] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver - ICMP] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-                # Saving reassembled and decrypted data to a txt file
-                with open("reassembled_payload_icmp.txt", "w") as file:
-                    file.write(decrypted_payload)
+                save_payload_to_file_icmp(decrypted_payload)
             except Exception as e:
                 print(f"[Receiver - ICMP] Error reassembling or decrypting payload: {e}")
         else:
@@ -342,9 +365,7 @@ if __name__ == "__main__":
                 print(f"[Debug - DNS] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver - DNS] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-                # Saving reassembled and decrypted data to a txt file
-                with open("reassembled_payload_dns.txt", "w") as file:
-                    file.write(decrypted_payload)
+                save_payload_to_file_dns(decrypted_payload)
 
             except Exception as e:
                 print(f"[Receiver - DNS] Error reassembling or decrypting payload: {e}")
