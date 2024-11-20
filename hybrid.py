@@ -278,7 +278,11 @@ def packet_sniffer():
 # Run Payload Transmission
 if __name__ == "__main__":
     target_ip = "127.0.0.1"
-    text_payload = "This is my hardcoded payload that I am tunneling over."
+    #text_payload = "This is my hardcoded payload that I am tunneling over."
+
+    # Example: Reading a payload from a TXT file
+    with open("payload.txt", "r") as file:
+        text_payload = file.read()
 
     # Encrypt and compress the payload before transmission
     encrypted_payload = encrypt_and_compress_payload(text_payload)
@@ -321,6 +325,9 @@ if __name__ == "__main__":
                 print(f"[Debug - ICMP] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver - ICMP] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+                # Saving reassembled and decrypted data to a txt file
+                with open("reassembled_payload_icmp.txt", "w") as file:
+                    file.write(decrypted_payload)
             except Exception as e:
                 print(f"[Receiver - ICMP] Error reassembling or decrypting payload: {e}")
         else:
@@ -335,6 +342,10 @@ if __name__ == "__main__":
                 print(f"[Debug - DNS] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver - DNS] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+                # Saving reassembled and decrypted data to a txt file
+                with open("reassembled_payload_dns.txt", "w") as file:
+                    file.write(decrypted_payload)
+
             except Exception as e:
                 print(f"[Receiver - DNS] Error reassembling or decrypting payload: {e}")
         else:
