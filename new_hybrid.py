@@ -7,8 +7,9 @@ import base64
 import hashlib
 import requests
 import ssl
+import string
 from flask import Flask, request, jsonify
-from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, Raw, send, sniff
+from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, Raw, send, sniff, get_if_list
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
@@ -17,10 +18,15 @@ SECRET_KEY = "mysecretkey12345"
 stop_sniffer = threading.Event()
 dict_lock = threading.Lock()
 received_chunks = {}
-dns_servers = ["127.0.0.1"]
-http_server_ip = "127.0.0.1"
+dns_servers = ["127.0.0.1"]  # Replace with your actual IP
+http_server_ip = "192.168.86.132"  # Replace with your actual IP
 http_server_port = 5000
 chunk_size = 32  # You can adjust this if needed
+
+# Generate a random string of specified length
+def generate_random_payload(length):
+    letters = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(random.choice(letters) for i in range(length))
 
 # Encryption and Compression
 def encrypt_and_compress_payload(payload):
@@ -53,45 +59,6 @@ def split_payload(payload):
         print(f"[Debug] Assigned chunk index {i} to protocol {protocol}: {chunk}")
 
     return assigned_chunks
-
-# Dummy Traffic (Optional)
-def send_dummy_traffic():
-    while not stop_sniffer.is_set():
-        traffic_type = random.choice(['icmp', 'dns', 'http', 'https'])
-        if traffic_type == 'icmp':
-            send_dummy_icmp()
-        elif traffic_type == 'dns':
-            send_dummy_dns()
-        elif traffic_type == 'http':
-            send_dummy_http()
-        elif traffic_type == 'https':
-            send_dummy_https()
-        time.sleep(random.uniform(1, 3))
-
-def send_dummy_icmp():
-    target_ip = random.choice(['8.8.8.8', '1.1.1.1'])
-    dummy_payload = os.urandom(random.randint(32, 64))
-    packet = IP(dst=target_ip) / ICMP() / Raw(load=dummy_payload)
-    send(packet, verbose=False)
-    print(f"[Dummy ICMP] Sent dummy ICMP packet to {target_ip}")
-
-def send_dummy_dns():
-    domain = random.choice(['google.com', 'facebook.com', 'example.com'])
-    packet = IP(dst=dns_servers[0]) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=domain))
-    send(packet, verbose=False)
-    print(f"[Dummy DNS] Sent dummy DNS query for {domain}")
-
-def send_dummy_http():
-    http_payload = f"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".encode()
-    packet = IP(dst="127.0.0.1") / TCP(dport=80) / Raw(load=http_payload)
-    send(packet, verbose=False)
-    print("[Dummy HTTP] Sent dummy HTTP request")
-
-def send_dummy_https():
-    tls_payload = os.urandom(64)
-    packet = IP(dst="127.0.0.1") / TCP(dport=443) / Raw(load=tls_payload)
-    send(packet, verbose=False)
-    print("[Dummy HTTPS] Sent dummy HTTPS packet")
 
 # Flask Server for HTTP and HTTPS Reception
 app = Flask(__name__)
@@ -217,8 +184,9 @@ def reassemble_payload():
 
 # Main
 if __name__ == "__main__":
-    target_ip = "127.0.0.1"
-    text_payload = "This is my hardcoded payload. " * 50  # Increased payload size
+    target_ip = "192.168.86.132"  # Replace with your actual IP
+    # Use random payload to avoid over-compression
+    text_payload = generate_random_payload(1500)  # Adjust the length as needed
     encrypted_payload = encrypt_and_compress_payload(text_payload)
 
     print(f"[Main] Encrypted payload size: {len(encrypted_payload)} bytes")
@@ -237,18 +205,16 @@ if __name__ == "__main__":
     threading.Thread(target=start_https_server, daemon=True).start()
 
     print("[Main] Starting sniffer...")
+    interface = "Software Loopback Interface 1"  # Replace with your interface name
     threading.Thread(
         target=lambda: sniff(
+            iface=interface,
             filter="icmp or udp port 53",
             prn=process_packet,
             stop_filter=lambda x: stop_sniffer.is_set()
         ),
         daemon=True
     ).start()
-
-    # Optionally start dummy traffic
-    # print("[Main] Starting dummy traffic...")
-    # threading.Thread(target=send_dummy_traffic, daemon=True).start()
 
     time.sleep(5)  # Allow servers and threads to initialize
 
