@@ -22,7 +22,7 @@ stop_sniffer = threading.Event()  # Event to signal the sniffer to stop
 dict_lock = threading.Lock()  # Lock for thread-safe access to received_chunks
 DNS_DOMAIN = "example.com"  # Example domain for DNS queries
 dns_servers = ["8.8.8.8", "8.8.4.4"]  # Public DNS servers for testing
-HTTP_SERVER_IP = "127.0.0.1"  # Localhost for testing HTTP dummy traffic
+HTTP_SERVER_IP = "127.0.0.1"  # Localhost for testing HTTP/HTTPS traffic
 HTTP_SERVER_PORT = 5000  # Port for the HTTP server
 
 # Encryption and Compression function
@@ -46,7 +46,7 @@ def decrypt_and_decompress_payload(encrypted_payload):
     except Exception as e:
         raise Exception(f"Decryption failed: {e}")
 
-# Flask app for HTTP server
+# Flask app for HTTP/HTTPS server
 app = Flask(__name__)
 
 @app.route('/receive_payload', methods=['POST'])
@@ -62,15 +62,19 @@ def receive_payload():
         with dict_lock:
             if chunk_index not in received_chunks_http:
                 received_chunks_http[chunk_index] = chunk
-                print(f"[Receiver - HTTP] Received chunk index {chunk_index}: {chunk}")
+                print(f"[Receiver - HTTP/HTTPS] Received chunk index {chunk_index}: {chunk}")
             else:
-                print(f"[Receiver - HTTP] Duplicate chunk index {chunk_index} ignored.")
+                print(f"[Receiver - HTTP/HTTPS] Duplicate chunk index {chunk_index} ignored.")
         return jsonify({"status": "success"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 def start_http_server():
     app.run(host=HTTP_SERVER_IP, port=HTTP_SERVER_PORT, debug=False, use_reloader=False)
+
+def start_https_server():
+    context = ('cert.pem', 'key.pem')  # Paths to your SSL certificate and key
+    app.run(host=HTTP_SERVER_IP, port=HTTP_SERVER_PORT + 1, ssl_context=context, debug=False, use_reloader=False)
 
 # ICMP Payload Sender
 def send_icmp_payload(payload, target_ip):
@@ -117,7 +121,28 @@ def send_http_payload(payload, target_ip):
         except Exception as e:
             print(f"[Sender - HTTP] Error sending chunk index {i}: {e}")
 
-# Run Payload Transmission
+# HTTPS Payload Sender
+def send_https_payload(payload, target_ip):
+    chunk_size = 32
+    payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+    for i, chunk in enumerate(payload_chunks):
+        chunk_b64 = base64.b64encode(chunk).decode()
+        data = {
+            "chunk_index": i,
+            "chunk": chunk_b64
+        }
+
+        try:
+            response = requests.post(f"https://{target_ip}:{HTTP_SERVER_PORT + 1}/receive_payload", json=data, verify=False)
+            if response.status_code == 200:
+                print(f"[Sender - HTTPS] Successfully sent chunk index {i}")
+            else:
+                print(f"[Sender - HTTPS] Failed to send chunk index {i}: {response.text}")
+        except Exception as e:
+            print(f"[Sender - HTTPS] Error sending chunk index {i}: {e}")
+
+# Main Script
 if __name__ == "__main__":
     target_ip = HTTP_SERVER_IP
     text_payload = "This is my hardcoded payload that I am tunneling over."
@@ -126,12 +151,15 @@ if __name__ == "__main__":
     encrypted_payload = encrypt_and_compress_payload(text_payload)
     print(f"[Main] Original Encrypted Payload Length: {len(encrypted_payload)}")
 
-    # Start HTTP server thread
-    print("[Main] Starting HTTP server...")
+    # Start HTTP and HTTPS server threads
+    print("[Main] Starting HTTP and HTTPS servers...")
     http_server_thread = threading.Thread(target=start_http_server, daemon=True)
     http_server_thread.start()
 
-    # Give the HTTP server time to start
+    https_server_thread = threading.Thread(target=start_https_server, daemon=True)
+    https_server_thread.start()
+
+    # Give the servers time to start
     time.sleep(2)
 
     # Send payload via all protocols
@@ -144,16 +172,19 @@ if __name__ == "__main__":
     print("[Main] Sending payload via HTTP...")
     send_http_payload(encrypted_payload, target_ip)
 
+    print("[Main] Sending payload via HTTPS...")
+    send_https_payload(encrypted_payload, target_ip)
+
     # Wait for threads to process
     time.sleep(10)
 
-    # Reassemble and decrypt received HTTP chunks
+    # Reassemble and decrypt received HTTPS chunks
     with dict_lock:
         if received_chunks_http:
             try:
                 sorted_chunks = [received_chunks_http[key] for key in sorted(received_chunks_http.keys())]
                 reassembled_payload = b''.join(sorted_chunks)
                 decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-                print(f"[Receiver - HTTP] Final Decrypted Payload: {decrypted_payload}")
+                print(f"[Receiver - HTTPS] Final Decrypted Payload: {decrypted_payload}")
             except Exception as e:
-                print(f"[Receiver - HTTP] Error: {e}")
+                print(f"[Receiver - HTTPS] Error: {e}")
