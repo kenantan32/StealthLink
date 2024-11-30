@@ -1,67 +1,61 @@
 import os
 import random
-import string
 import time
-import hashlib
 import threading
 import zlib
-import datetime
 import base64
-import uuid
-from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, send, sniff, conf, Raw
+import hashlib
+import ssl
+from flask import Flask, request, jsonify
+from scapy.all import IP, ICMP, UDP, TCP, DNS, DNSQR, Raw, send, sniff
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
 # Configuration
-SECRET_KEY = "mysecretkey12345"  # Key for encryption and decryption
-received_chunks_icmp = {}  # Dictionary to hold received ICMP chunks
-received_chunks_dns = {}   # Dictionary to hold received DNS chunks
-stop_sniffer = threading.Event()  # Event to signal the sniffer to stop
-dict_lock = threading.Lock()  # Lock for thread-safe access to received_chunks
-DNS_DOMAIN = "example.com"  # Example domain for DNS queries
-dns_servers = ["127.0.0.1"]  # Public DNS servers for testing
-HTTP_SERVER_IP = "127.0.0.1"  # Localhost for testing HTTP dummy traffic
+SECRET_KEY = "mysecretkey12345"
+stop_sniffer = threading.Event()
+dict_lock = threading.Lock()
+received_chunks = {}
+dns_servers = ["127.0.0.1"]
+http_server_ip = "127.0.0.1"
+http_server_port = 5000
+chunk_size = 32
 
-# Encryption and Compression function
+# Encryption and Compression
 def encrypt_and_compress_payload(payload):
-    # Compress the payload
     compressed_payload = zlib.compress(payload.encode())
-    # Encrypt the compressed payload
-    key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
-    cipher = AES.new(key, AES.MODE_CBC)
-    ct_bytes = cipher.encrypt(pad(compressed_payload, AES.block_size))
-    return cipher.iv + ct_bytes
-
-# Decryption and Decompression function
-def decrypt_and_decompress_payload(encrypted_payload):
-    try:
-        key = hashlib.sha256(SECRET_KEY.encode()).digest()  # Derive a 256-bit key from the secret key
-        iv = encrypted_payload[:16]
-        ct = encrypted_payload[16:]
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        compressed_payload = unpad(cipher.decrypt(ct), AES.block_size)
-        # Decompress the payload
-        decompressed_payload = zlib.decompress(compressed_payload)
-        return decompressed_payload.decode()
-    except ValueError as e:
-        raise ValueError(f"Decryption failed due to incorrect data format: {e}")
-    except Exception as e:
-        raise Exception(f"Decryption failed: {e}")
-
-# Generate Encrypted Identifier
-def generate_encrypted_identifier():
-    # Generate a fixed-length UUID string
-    plaintext_id = str(uuid.uuid4())  # 36 characters
     key = hashlib.sha256(SECRET_KEY.encode()).digest()
     cipher = AES.new(key, AES.MODE_CBC)
-    ct_bytes = cipher.encrypt(pad(plaintext_id.encode(), AES.block_size))
-    identifier = cipher.iv + ct_bytes
-    return identifier
+    encrypted = cipher.iv + cipher.encrypt(pad(compressed_payload, AES.block_size))
+    return encrypted
 
-# Dummy Traffic Sender
+def decrypt_and_decompress_payload(payload):
+    try:
+        key = hashlib.sha256(SECRET_KEY.encode()).digest()
+        iv = payload[:16]
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = unpad(cipher.decrypt(payload[16:]), AES.block_size)
+        decompressed = zlib.decompress(decrypted)
+        return decompressed.decode()
+    except Exception as e:
+        raise ValueError(f"Error decrypting or decompressing payload: {e}")
+
+# Split Payload
+def split_payload(payload):
+    payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+    protocols = ['icmp', 'dns', 'http', 'https']
+    assigned_chunks = {protocol: [] for protocol in protocols}
+
+    for i, chunk in enumerate(payload_chunks):
+        protocol = protocols[i % len(protocols)]
+        assigned_chunks[protocol].append((i, chunk))
+        print(f"[Debug] Assigned chunk index {i} to protocol {protocol}: {chunk}")
+
+    return assigned_chunks
+
+# Dummy Traffic
 def send_dummy_traffic():
     while not stop_sniffer.is_set():
-        # Decide randomly which dummy traffic to send
         traffic_type = random.choice(['icmp', 'dns', 'http', 'https'])
         if traffic_type == 'icmp':
             send_dummy_icmp()
@@ -71,272 +65,198 @@ def send_dummy_traffic():
             send_dummy_http()
         elif traffic_type == 'https':
             send_dummy_https()
-        # Random sleep to mimic human behavior
-        time.sleep(random.uniform(0.5, 2))
+        time.sleep(random.uniform(1, 3))
 
-# Dummy ICMP Traffic Sender
 def send_dummy_icmp():
     target_ip = random.choice(['8.8.8.8', '1.1.1.1'])
-    # Generate realistic ICMP echo request
-    dummy_payload = os.urandom(random.randint(32, 64))  # Random binary data
-    sequence_number = random.randint(0, 65535)
-    ttl_value = random.randint(30, 128)
-    packet = IP(dst=target_ip, ttl=ttl_value) / ICMP(type='echo-request', seq=sequence_number) / Raw(load=dummy_payload)
+    dummy_payload = os.urandom(random.randint(32, 64))
+    packet = IP(dst=target_ip) / ICMP() / Raw(load=dummy_payload)
     send(packet, verbose=False)
-    print(f"[Dummy ICMP] Sent dummy ICMP echo request to {target_ip}")
+    print(f"[Dummy ICMP] Sent dummy ICMP packet to {target_ip}")
 
-# Dummy DNS Traffic Sender
 def send_dummy_dns():
-    # Use real domain names
-    domain = random.choice(['google.com', 'facebook.com', 'amazon.com', 'github.com'])
-    dns_server = random.choice(dns_servers)
-    packet = IP(dst=dns_server) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=domain))
+    domain = random.choice(['google.com', 'facebook.com', 'example.com'])
+    packet = IP(dst=dns_servers[0]) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=domain))
     send(packet, verbose=False)
-    print(f"[Dummy DNS] Sent dummy DNS query for {domain} to {dns_server}")
+    print(f"[Dummy DNS] Sent dummy DNS query for {domain}")
 
-# Dummy HTTP Traffic Sender
 def send_dummy_http():
-    # Generate a simple HTTP GET request
-    host = random.choice(['example.com', 'test.com', 'mywebsite.com'])
-    path = random.choice(['/index.html', '/about', '/contact'])
-    http_payload = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: DummyAgent\r\n\r\n".encode()
-    target_ip = HTTP_SERVER_IP
-    packet = IP(dst=target_ip) / TCP(dport=80, sport=random.randint(1024, 65535), flags='S') / Raw(load=http_payload)
+    http_payload = f"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".encode()
+    packet = IP(dst="127.0.0.1") / TCP(dport=80) / Raw(load=http_payload)
     send(packet, verbose=False)
-    print(f"[Dummy HTTP] Sent dummy HTTP GET request to {host}{path}")
+    print("[Dummy HTTP] Sent dummy HTTP request")
 
-# Dummy HTTPS Traffic Sender
 def send_dummy_https():
-    # Generate a simple HTTPS Client Hello (simulated)
-    host = random.choice(['secure.com', 'bank.com', 'login.com'])
-    tls_payload = os.urandom(random.randint(64, 128))  # Random binary data to simulate TLS handshake
-    target_ip = HTTP_SERVER_IP
-    packet = IP(dst=target_ip) / TCP(dport=443, sport=random.randint(1024, 65535), flags='S') / Raw(load=tls_payload)
+    tls_payload = os.urandom(64)
+    packet = IP(dst="127.0.0.1") / TCP(dport=443) / Raw(load=tls_payload)
     send(packet, verbose=False)
-    print(f"[Dummy HTTPS] Sent dummy HTTPS Client Hello to {host}")
+    print("[Dummy HTTPS] Sent dummy HTTPS packet")
 
-# ICMP Payload Sender with Enhanced Dummy Traffic
-def send_icmp_payload_with_dummy(payload, target_ip):
-    chunk_size = 32
-    payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+# Flask Server for HTTP and HTTPS Reception
+app = Flask(__name__)
 
-    for i, chunk in enumerate(payload_chunks):
-        sequence_number = random.randint(0, 65535)
-        ttl_value = random.randint(30, 128)
+@app.route('/receive_payload', methods=['POST'])
+def receive_payload():
+    data = request.json
+    print(f"[HTTP/HTTPS - Debug] Received POST request: {data}")
+    if not data or 'chunk_index' not in data or 'chunk' not in data:
+        return jsonify({"error": "Invalid payload"}), 400
 
-        # Generate encrypted identifier
-        identifier = generate_encrypted_identifier()
-        identifier_length = len(identifier)
+    try:
+        chunk_index = int(data['chunk_index'])
+        chunk = base64.b64decode(data['chunk'])
+        with dict_lock:
+            if chunk_index not in received_chunks:
+                received_chunks[chunk_index] = chunk
+                print(f"[Receiver - HTTP/HTTPS] Received chunk index {chunk_index}: {chunk}")
+            else:
+                print(f"[Receiver - HTTP/HTTPS] Duplicate chunk index {chunk_index} ignored.")
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        print(f"[Receiver - HTTP/HTTPS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
-        # Include the chunk index (4 bytes) in the payload
-        chunk_index = i.to_bytes(4, byteorder='big')
+def start_http_server():
+    app.run(host=http_server_ip, port=http_server_port, debug=False, use_reloader=False)
 
-        # Construct the packet payload: identifier length (4 bytes) + identifier + chunk index (4 bytes) + chunk
-        packet_payload = identifier_length.to_bytes(4, byteorder='big') + identifier + chunk_index + chunk
+def start_https_server():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain('cert.pem', 'key.pem')  # Ensure these files exist
+    app.run(host=http_server_ip, port=http_server_port + 1, ssl_context=context, debug=False, use_reloader=False)
 
-        # Send the actual payload packet
-        packet = IP(dst=target_ip, ttl=ttl_value) / ICMP(type='echo-request', seq=sequence_number) / Raw(load=packet_payload)
+# Send Payload
+def send_icmp_payload(chunks, target_ip):
+    for i, chunk in chunks:
+        packet_payload = f"{i}|".encode() + chunk
+        packet = IP(dst=target_ip) / ICMP() / Raw(load=packet_payload)
         send(packet, verbose=False)
-        print(f"[Sender - ICMP] Sent payload packet with sequence number {sequence_number}")
-        print(f"[Sender - ICMP] Sending chunk index {i}, chunk: {chunk}")
+        print(f"[Sender - ICMP] Sent chunk index {i} with payload: {packet_payload}")
 
-        # Sleep for a realistic time before sending next packet
-        time.sleep(random.uniform(0.5, 1.5))
-
-# DNS Payload Sender with Enhanced Dummy Traffic
-def send_dns_payload_with_dummy(payload):
-    chunk_size = 32
-    payload_chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
-
-    for i, chunk in enumerate(payload_chunks):
-        # Generate encrypted identifier
-        identifier = generate_encrypted_identifier()
-        identifier_length = len(identifier)
-
-        # Include the chunk index (4 bytes) in the payload
-        chunk_index = i.to_bytes(4, byteorder='big')
-
-        # Encode the identifier to Base64 for use in the domain name
-        identifier_b64 = base64.urlsafe_b64encode(identifier).decode().rstrip('=')
-
-        query_domain = f"{identifier_b64}.{DNS_DOMAIN}"
-        dns_server = random.choice(dns_servers)
-
-        # Include the identifier length and chunk index in the packet payload
-        packet_payload = identifier_length.to_bytes(4, byteorder='big') + identifier + chunk_index + chunk
-
-        # Send the actual payload packet
-        packet = IP(dst=dns_server) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_domain)) / Raw(load=packet_payload)
+def send_dns_payload(chunks):
+    for i, chunk in chunks:
+        chunk_b64 = base64.urlsafe_b64encode(chunk).decode().rstrip('=')
+        query_name = f"{i}.{chunk_b64}.example.com"
+        packet = IP(dst=dns_servers[0]) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=query_name))
         send(packet, verbose=False)
-        print(f"[Sender - DNS] Sent payload DNS query: {query_domain}")
-        print(f"[Sender - DNS] Sending chunk index {i}, chunk: {chunk}")
+        print(f"[Sender - DNS] Sent chunk index {i} as query: {query_name}")
 
-        # Sleep for a realistic time before sending next packet
-        time.sleep(random.uniform(0.5, 1.5))
+def send_http_payload(chunks, target_ip):
+    for i, chunk in chunks:
+        url = f"http://{target_ip}:{http_server_port}/receive_payload"
+        chunk_b64 = base64.b64encode(chunk).decode()
+        data = {'chunk_index': i, 'chunk': chunk_b64}
+        print(f"[Sender - HTTP] Sending POST request to {url} with data: {data}")
+        response = requests.post(url, json=data)
+        print(f"[Sender - HTTP] Response: {response.status_code}, {response.text}")
 
-# Packet Sniffer and Reassembler
-def packet_sniffer():
-    def icmp_sniffer(packet):
-        if stop_sniffer.is_set():
-            return
+def send_https_payload(chunks, target_ip):
+    for i, chunk in chunks:
+        url = f"https://{target_ip}:{http_server_port + 1}/receive_payload"
+        chunk_b64 = base64.b64encode(chunk).decode()
+        data = {'chunk_index': i, 'chunk': chunk_b64}
+        print(f"[Sender - HTTPS] Sending POST request to {url} with data: {data}")
+        response = requests.post(url, json=data, verify=False)
+        print(f"[Sender - HTTPS] Response: {response.status_code}, {response.text}")
 
+# Sniffer
+def process_packet(packet):
+    try:
+        # Debug all ICMP packets
         if packet.haslayer(ICMP) and packet.haslayer(Raw):
-            try:
-                payload_data = packet[Raw].load
-                seq_num = packet[ICMP].seq
+            print(f"[Sniffer - Debug] Captured ICMP packet: {packet.summary()}")
+            payload = packet[Raw].load
+            if b'|' in payload:
+                index_str, chunk = payload.split(b'|', 1)
+                try:
+                    chunk_index = int(index_str.decode())
+                    with dict_lock:
+                        if chunk_index not in received_chunks:
+                            received_chunks[chunk_index] = chunk
+                            print(f"[Receiver - ICMP] Received chunk index {chunk_index}: {chunk}")
+                        else:
+                            print(f"[Receiver - ICMP] Duplicate chunk index {chunk_index} ignored.")
+                except ValueError:
+                    print(f"[Sniffer - ICMP] Invalid chunk index in payload: {index_str}")
 
-                # Extract identifier length
-                identifier_length = int.from_bytes(payload_data[:4], byteorder='big')
-                # Extract the encrypted identifier
-                identifier = payload_data[4:4 + identifier_length]
-                # Extract the chunk index
-                index_start = 4 + identifier_length
-                chunk_index = int.from_bytes(payload_data[index_start:index_start+4], byteorder='big')
-                # Extract the actual payload chunk
-                actual_payload = payload_data[index_start + 4:]
-
-                # Decrypt the identifier
-                key = hashlib.sha256(SECRET_KEY.encode()).digest()
-                iv = identifier[:16]
-                ct = identifier[16:]
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                plaintext_id = unpad(cipher.decrypt(ct), AES.block_size).decode()
-
-                # If decryption is successful, it's a payload packet
+        # Debug all DNS packets
+        elif packet.haslayer(DNS) and packet.haslayer(DNSQR):
+            print(f"[Sniffer - Debug] Captured DNS packet: {packet.summary()}")
+            query_name = packet[DNSQR].qname.decode().strip('.')
+            parts = query_name.split('.')
+            if len(parts) >= 2 and parts[0].isdigit():
+                chunk_index = int(parts[0])
+                chunk_b64 = parts[1]
+                chunk = base64.urlsafe_b64decode(chunk_b64 + '==')
                 with dict_lock:
-                    if chunk_index not in received_chunks_icmp:
-                        received_chunks_icmp[chunk_index] = actual_payload
-                        print(f"[Sniffer - ICMP] Payload packet received with sequence number {seq_num}, chunk index {chunk_index}")
-                        print(f"[Sniffer - ICMP] Stored payload chunk: {actual_payload}")
+                    if chunk_index not in received_chunks:
+                        received_chunks[chunk_index] = chunk
+                        print(f"[Receiver - DNS] Received chunk index {chunk_index}: {chunk}")
                     else:
-                        print(f"[Sniffer - ICMP] Duplicate packet with chunk index {chunk_index} ignored.")
-            except Exception as e:
-                # This is likely a dummy packet
-                pass  # Optionally, print debug information
+                        print(f"[Receiver - DNS] Duplicate chunk index {chunk_index} ignored.")
+    except Exception as e:
+        print(f"[Sniffer] Error processing packet: {e}")
 
-    def dns_sniffer(packet):
-        if stop_sniffer.is_set():
-            return
-
-        if packet.haslayer(DNS) and packet.haslayer(Raw):
+# Reassemble Payload
+def reassemble_payload():
+    with dict_lock:
+        if received_chunks:
+            sorted_chunks = [received_chunks[key] for key in sorted(received_chunks.keys())]
+            reassembled_payload = b''.join(sorted_chunks)
+            print(f"[Reassembler] Sorted chunks: {sorted(received_chunks.keys())}")
+            print(f"[Reassembler] Reassembled payload (bytes): {reassembled_payload}")
             try:
-                query_name = packet[DNS].qd.qname.decode().strip('.')
-                # Extract the Base64-encoded identifier from the subdomain
-                subdomain = query_name.split('.')[0]
-                # Add padding for base64 decoding
-                missing_padding = len(subdomain) % 4
-                if missing_padding:
-                    subdomain += '=' * (4 - missing_padding)
-                encrypted_identifier = base64.urlsafe_b64decode(subdomain.encode())
-
-                # Extract identifier length
-                payload_data = packet[Raw].load
-                identifier_length = int.from_bytes(payload_data[:4], byteorder='big')
-                # Extract the encrypted identifier
-                identifier = payload_data[4:4 + identifier_length]
-                # Extract the chunk index
-                index_start = 4 + identifier_length
-                chunk_index = int.from_bytes(payload_data[index_start:index_start+4], byteorder='big')
-                # Extract the actual payload chunk
-                actual_payload = payload_data[index_start + 4:]
-
-                # Decrypt the identifier
-                key = hashlib.sha256(SECRET_KEY.encode()).digest()
-                iv = identifier[:16]
-                ct = identifier[16:]
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                plaintext_id = unpad(cipher.decrypt(ct), AES.block_size).decode()
-
-                with dict_lock:
-                    if chunk_index not in received_chunks_dns:
-                        received_chunks_dns[chunk_index] = actual_payload
-                        print(f"[Sniffer - DNS] Payload DNS query received: {query_name}, chunk index {chunk_index}")
-                        print(f"[Sniffer - DNS] Stored payload chunk: {actual_payload}")
-                    else:
-                        print(f"[Sniffer - DNS] Duplicate packet with chunk index {chunk_index} ignored.")
+                decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
+                print(f"[Receiver] Final Reassembled and Decrypted Payload: {decrypted_payload}")
             except Exception as e:
-                # This is likely a dummy packet
-                pass  # Optionally, print debug information
+                print(f"[Receiver] Error reassembling payload: {e}")
+        else:
+            print("[Receiver] No chunks received.")
 
-    # Start sniffing packets
-    def process_packet(pkt):
-        icmp_sniffer(pkt)
-        dns_sniffer(pkt)
-
-    # Use the interface name that was working for you
-    sniff(filter="icmp or udp port 53 or tcp port 80 or tcp port 443",
-          prn=process_packet,
-          store=0,
-          iface="Software Loopback Interface 1",  # Using the original interface name
-          stop_filter=lambda x: stop_sniffer.is_set())
-
-# Run Payload Transmission
+# Main
 if __name__ == "__main__":
     target_ip = "127.0.0.1"
-    text_payload = "This is my hardcoded payload that I am tunneling over."
-
-    # Encrypt and compress the payload before transmission
+    text_payload = "This is my hardcoded payload. " * 2  # Adjust payload size for debugging
     encrypted_payload = encrypt_and_compress_payload(text_payload)
-    print(f"[Main] Original Encrypted Payload Length: {len(encrypted_payload)}")
 
-    # Start the sniffer thread
-    print("[Main] Starting sniffer thread...")
-    sniffer_thread = threading.Thread(target=packet_sniffer, daemon=True)
-    sniffer_thread.start()
+    print(f"[Main] Encrypted payload size: {len(encrypted_payload)} bytes")
+    assigned_chunks = split_payload(encrypted_payload)
 
-    # Start the dummy traffic sender thread
-    print("[Main] Starting dummy traffic thread...")
-    dummy_thread = threading.Thread(target=send_dummy_traffic, daemon=True)
-    dummy_thread.start()
+    print("[Main] Starting HTTP server...")
+    threading.Thread(target=start_http_server, daemon=True).start()
 
-    # Give the sniffer and dummy traffic threads time to initialize
-    time.sleep(2)
-    print("[Main] Threads started. Sending payload with enhanced dummy traffic...")
+    print("[Main] Starting HTTPS server...")
+    threading.Thread(target=start_https_server, daemon=True).start()
 
-    # Send the payload via ICMP with enhanced dummy traffic
-    send_icmp_payload_with_dummy(encrypted_payload, target_ip)
-    # Optionally, send the payload via DNS with enhanced dummy traffic
-    send_dns_payload_with_dummy(encrypted_payload)
+    print("[Main] Starting sniffer...")
+    threading.Thread(
+        target=lambda: sniff(
+            filter="icmp or udp port 53",
+            prn=process_packet,
+            stop_filter=lambda x: stop_sniffer.is_set()
+        ),
+        daemon=True
+    ).start()
 
-    print("[Main] Payload transmission complete.")
+    # Uncomment the following line after debugging
+    # print("[Main] Starting dummy traffic...")
+    # threading.Thread(target=send_dummy_traffic, daemon=True).start()
 
-    # Wait to ensure all packets are processed
-    time.sleep(10)
+    time.sleep(5)  # Allow servers and threads to initialize
 
-    # Signal the sniffer and dummy traffic to stop
+    print("[Main] Sending payload over ICMP...")
+    send_icmp_payload(assigned_chunks['icmp'], target_ip)
+
+    print("[Main] Sending payload over DNS...")
+    send_dns_payload(assigned_chunks['dns'])
+
+    print("[Main] Sending payload over HTTP...")
+    send_http_payload(assigned_chunks['http'], http_server_ip)
+
+    print("[Main] Sending payload over HTTPS...")
+    send_https_payload(assigned_chunks['https'], http_server_ip)
+
+    time.sleep(10)  # Allow time for packets to be processed
     stop_sniffer.set()
 
-    # Attempt to reassemble and decrypt the ICMP payload after sending is complete
-    with dict_lock:
-        if received_chunks_icmp:
-            try:
-                # Sort the chunks based on their chunk index
-                sorted_chunks = [received_chunks_icmp[key] for key in sorted(received_chunks_icmp.keys())]
-                reassembled_payload = b''.join(sorted_chunks)
-                print(f"[Debug - ICMP] Reassembled Payload Length: {len(reassembled_payload)}")
-                decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-                print(f"[Receiver - ICMP] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-            except Exception as e:
-                print(f"[Receiver - ICMP] Error reassembling or decrypting payload: {e}")
-        else:
-            print("[Receiver - ICMP] No ICMP packets were received.")
-
-    # Attempt to reassemble and decrypt the DNS payload after sending is complete
-    with dict_lock:
-        if received_chunks_dns:
-            try:
-                sorted_chunks = [received_chunks_dns[key] for key in sorted(received_chunks_dns.keys())]
-                reassembled_payload = b''.join(sorted_chunks)
-                print(f"[Debug - DNS] Reassembled Payload Length: {len(reassembled_payload)}")
-                decrypted_payload = decrypt_and_decompress_payload(reassembled_payload)
-                print(f"[Receiver - DNS] Final Reassembled and Decrypted Payload: {decrypted_payload}")
-            except Exception as e:
-                print(f"[Receiver - DNS] Error reassembling or decrypting payload: {e}")
-        else:
-            print("[Receiver - DNS] No DNS packets were received.")
-
-    # Wait for the threads to finish
-    sniffer_thread.join(timeout=5)
-    dummy_thread.join(timeout=5)
-
-    print("[Main] Threads have been stopped. Exiting program.")
+    print("[Main] Reassembling payload...")
+    reassemble_payload()
