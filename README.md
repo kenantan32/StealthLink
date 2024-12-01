@@ -7,3 +7,27 @@ StealthLink is an an advanced anti-forensic tool that is designed to exploit net
 ![image](https://github.com/user-attachments/assets/84e2dc8f-979d-493e-88b7-01656d68adf3)
 
 ## How to use?
+For **BOTH** sender-side and receiver-side:
+```
+git clone https://github.com/kenantan32/StealthLink.git
+```
+For **receiver-side: (Important: RUN THIS FIRST)**
+1. Run ```receiver.py```
+```
+sudo python3 receiver.py
+```
+
+For **sender-side:**
+1. Open ```sender.py``` and change the configuration to match your network environtment, target IP and file path(payload).
+```
+# Configuration
+http_server_ip = "192.168.186.129"  # Replace with the receiver's actual IP
+dns_server_ip = "192.168.186.129"  # Replace with the DNS server's actual IP
+target_ip = "192.168.186.129"      # Replace with the receiver's actual IP
+file_path = "payload.pdf"      # Replace with your actual file path
+```
+
+2. Run ```sender.py```
+```
+sudo python3 sender.py
+```
