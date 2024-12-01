@@ -1,0 +1,10 @@
+2024-12-01 18:10:31,586 - ERROR - [Error] Unable to read file: [WinError 2] The system cannot find the file specified: 'pdf_payload.pdf'
+2024-12-01 18:10:31,589 - ERROR - [Main] Exiting due to file read error.
+2024-12-01 18:10:31,591 - DEBUG - Starting new HTTP connection (1): 192.168.186.129:5000
+2024-12-01 18:10:43,536 - ERROR - [Error] Unable to read file: [WinError 2] The system cannot find the file specified: 'pdf_payload.pdf'
+2024-12-01 18:10:43,538 - ERROR - [Main] Exiting due to file read error.
+2024-12-01 18:10:43,541 - DEBUG - Starting new HTTP connection (1): 192.168.186.129:5000
+2024-12-01 18:11:12,293 - ERROR - [Error] Unable to read file: [WinError 2] The system cannot find the file specified: 'payload.pdf'
+2024-12-01 18:11:12,297 - ERROR - [Main] Exiting due to file read error.
+2024-12-01 18:11:12,297 - DEBUG - Starting new HTTP connection (1): 192.168.186.129:5000
+2024-12-01 18:11:12,298 - DEBUG - Starting new HTTPS connection (1): 192.168.186.129:5001
